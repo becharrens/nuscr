@@ -19,6 +19,7 @@ type user_error =
   | InconsistentNestedChoice of RoleName.t * RoleName.t
   | RoleMismatch of RoleName.t * RoleName.t
   | DuplicateLabel of LabelName.t
+  | DuplicateRoleArgs of ProtocolName.t
 [@@deriving sexp_of]
 
 exception UserError of user_error
@@ -69,6 +70,11 @@ let show_user_error = function
   | DuplicateLabel l ->
       "Duplicate label " ^ LabelName.user l ^ " in choices at "
       ^ show_source_loc (LabelName.where l)
+  | DuplicateRoleArgs called_proto ->
+      "Duplicate role arguments in call to protocol "
+      ^ ProtocolName.user called_proto
+      ^ " at "
+      ^ show_source_loc (ProtocolName.where called_proto)
 
 exception Violation of string
 [@@deriving sexp_of]
