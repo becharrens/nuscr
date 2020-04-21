@@ -82,8 +82,8 @@ let show_user_error = function
       ^ "' in choice at "
       ^ show_source_loc (ProtocolName.where called_proto)
       ^ "\n\
-         Some role involved in call (different from caller role) must \
-         receive first message in all branches"
+         Some role participating in call must receive first message in all \
+         branches"
 
 exception Violation of string
 [@@deriving sexp_of]
