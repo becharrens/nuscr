@@ -71,6 +71,13 @@ type t =
   | TVarG of TypeVariableName.t
   | ChoiceG of RoleName.t * t list
   | EndG
+  | CallG of RoleName.t * ProtocolName.t * RoleName.t list * t
+
+type global_t =
+  ( ProtocolName.t
+  , (RoleName.t list * RoleName.t list) * ProtocolName.t list * t
+  , ProtocolName.comparator_witness )
+  Map.t
 
 let show =
   let indent_here indent = String.make (indent * 2) ' ' in
@@ -99,8 +106,43 @@ let show =
         in
         let gs = String.concat ~sep:intermission choices in
         pre ^ gs ^ post
+    | CallG (caller, proto_name, roles, g) ->
+        sprintf "%s%s calls %s(%s);\n%s" current_indent
+          (RoleName.user caller)
+          (ProtocolName.user proto_name)
+          (String.concat ~sep:", " (List.map ~f:RoleName.user roles))
+          (show_global_type_internal indent g)
   in
   show_global_type_internal 0
+
+let call_label caller protocol roles =
+  let str_roles = List.map ~f:RoleName.user roles in
+  let roles_str = String.concat ~sep:"," str_roles in
+  (* Current label is a bit arbitrary - find better one? *)
+  let label_str =
+    sprintf "call(%s, %s(%s))" (RoleName.user caller)
+      (ProtocolName.user protocol)
+      roles_str
+  in
+  LabelName.create label_str (ProtocolName.where protocol)
+
+let show_global_t (g : global_t) =
+  let show_aux ~key ~data acc =
+    let (roles, new_roles), nested_protocols, g_ = data in
+    let roles_str = List.map ~f:RoleName.user roles in
+    let new_roles_str = List.map ~f:RoleName.user new_roles in
+    let str_proto_names = List.map ~f:ProtocolName.user nested_protocols in
+    let names_str = String.concat ~sep:", " str_proto_names in
+    let proto_str =
+      sprintf "protocol %s(%s) {\n\nNested Protocols: %s\n\n%s\n}"
+        (ProtocolName.user key)
+        (Symtable.show_roles (roles_str, new_roles_str))
+        (if String.length names_str = 0 then "-" else names_str)
+        (show g_)
+    in
+    proto_str :: acc
+  in
+  String.concat ~sep:"\n\n" (List.rev (Map.fold ~init:[] ~f:show_aux g))
 
 let of_protocol (global_protocol : Syntax.global_protocol) =
   let open Syntax in
@@ -149,12 +191,47 @@ let of_protocol (global_protocol : Syntax.global_protocol) =
           ChoiceG
             ( role
             , List.map ~f:(conv_interactions rec_names) interactions_list )
-      | Do _ ->
-          Violation "The do constructor should not be here. This cannot be!"
-          |> raise
-      | Calls _ -> unimpl "Calls interaction not implemented" )
+      | Do (protocol, _, roles, _) ->
+          (* Previously this would've been a violation *)
+          let fst_role = RoleName.of_name @@ List.hd_exn roles in
+          let role_names = List.map ~f:RoleName.of_name roles in
+          let cont = conv_interactions rec_names rest in
+          CallG (fst_role, ProtocolName.of_name protocol, role_names, cont)
+      | Calls (caller, proto, _, roles, _) ->
+          let caller_role = RoleName.of_name caller in
+          let role_names = List.map ~f:RoleName.of_name roles in
+          let cont = conv_interactions rec_names rest in
+          CallG (caller_role, ProtocolName.of_name proto, role_names, cont) )
   in
   conv_interactions [] interactions
+
+let global_t_of_module (scr_module : Syntax.scr_module) =
+  let open Syntax in
+  let split_role_names (roles, new_roles) =
+    let role_names = List.map ~f:RoleName.of_name roles in
+    let new_role_names = List.map ~f:RoleName.of_name new_roles in
+    (role_names, new_role_names)
+  in
+  let rec add_protocol protocols (protocol : global_protocol) =
+    let nested_protocols = protocol.value.nested_protocols in
+    let protocols =
+      List.fold ~init:protocols ~f:add_protocol nested_protocols
+    in
+    let proto_name = ProtocolName.of_name protocol.value.name in
+    let g = of_protocol protocol in
+    let roles = split_role_names protocol.value.split_roles in
+    let nested_protocol_names =
+      List.map
+        ~f:(fun {Loc.value= {name; _}; _} -> ProtocolName.of_name name)
+        nested_protocols
+    in
+    Map.add_exn protocols ~key:proto_name
+      ~data:(roles, nested_protocol_names, g)
+  in
+  let all_protocols = scr_module.protocols @ scr_module.nested_protocols in
+  List.fold
+    ~init:(Map.empty (module ProtocolName))
+    ~f:add_protocol all_protocols
 
 let rec flatten = function
   | ChoiceG (role, choices) ->
@@ -179,6 +256,8 @@ let rec substitute g tvar g_sub =
   | MessageG (m, r1, r2, g_) -> MessageG (m, r1, r2, substitute g_ tvar g_sub)
   | ChoiceG (r, g_) ->
       ChoiceG (r, List.map ~f:(fun g__ -> substitute g__ tvar g_sub) g_)
+  | CallG (caller, protocol, roles, g_) ->
+      CallG (caller, protocol, roles, substitute g_ tvar g_sub)
 
 let rec unfold = function
   | MuG (tvar, g_) as g -> substitute g_ tvar g
@@ -191,3 +270,14 @@ let rec normalise = function
       flatten (ChoiceG (r, g_))
   | (EndG | TVarG _) as g -> g
   | MuG (tvar, g_) -> unfold (MuG (tvar, normalise g_))
+  | CallG (caller, protocol, roles, g_) ->
+      CallG (caller, protocol, roles, normalise g_)
+
+let normalise_global_t (global_t : global_t) =
+  let normalise_protocol ~key ~data acc =
+    let all_roles, nested_protocols, g = data in
+    Map.add_exn acc ~key ~data:(all_roles, nested_protocols, normalise g)
+  in
+  Map.fold
+    ~init:(Map.empty (module ProtocolName))
+    ~f:normalise_protocol global_t

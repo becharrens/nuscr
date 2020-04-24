@@ -124,6 +124,8 @@ let of_local_type lty =
         ({old_env with g}, curr)
     | TVarL tv ->
         (env, List.Assoc.find_exn ~equal:TypeVariableName.equal env.tyvars tv)
+    | AcceptL _ | InviteCreateL _ ->
+        raise (Err.Violation "Nested protocols are not supported in efsm")
   in
   let env, start = conv_ltype_aux init_conv_env lty in
   (start, env.g)
