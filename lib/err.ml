@@ -21,6 +21,7 @@ type user_error =
   | DuplicateLabel of LabelName.t
   | DuplicateRoleArgs of ProtocolName.t
   | ChoiceCallRoleMismatch of ProtocolName.t
+  | DuplicatePayloadField of LabelName.t * VariableName.t
 [@@deriving sexp_of]
 
 exception UserError of user_error
@@ -84,6 +85,10 @@ let show_user_error = function
       ^ "\n\
          Some role participating in call must receive first message in all \
          branches"
+  | DuplicatePayloadField (label, field) ->
+      "Duplicate field name '" ^ VariableName.user field ^ "' in message '"
+      ^ LabelName.user label ^ "' at " ^ show_source_loc
+      @@ LabelName.where label
 
 exception Violation of string
 [@@deriving sexp_of]
