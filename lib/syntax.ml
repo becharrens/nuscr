@@ -106,6 +106,8 @@ and raw_global_interaction =
   | Continue of name
   (* role, protocol options *)
   | Choice of name * global_interaction list list
+  (* protocol options *)
+  | MixedChoice of global_interaction list list
   (* protocol * non role args * roles *)
   | Do of name * message list * name list * annotation option
   (* caller * protocol * non role args * roles *)

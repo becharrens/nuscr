@@ -21,6 +21,8 @@ let rec swap_role swap_role_f {value; loc} =
         Choice
           ( swap_role_f role
           , List.map ~f:(List.map ~f:(swap_role swap_role_f)) gs )
+    | MixedChoice gs ->
+        MixedChoice (List.map ~f:(List.map ~f:(swap_role swap_role_f)) gs)
     | Do (proto, msgs, roles, ann) ->
         Do (proto, msgs, List.map ~f:swap_role_f roles, ann)
     | Calls (caller, proto, msgs, roles, ann) ->
@@ -151,6 +153,9 @@ let expand_global_protocol (scr_module : scr_module)
       | Choice (r, iss) ->
           let known, iss = List.fold_map ~f:expand_aux ~init:known iss in
           (known, [{i with value= Choice (r, iss)}])
+      | MixedChoice iss ->
+          let known, iss = List.fold_map ~f:expand_aux ~init:known iss in
+          (known, [{i with value= MixedChoice iss}])
       | _ -> (known, [i])
     in
     let known, interactions =
@@ -332,6 +337,13 @@ let rename_nested_protocols (scr_module : scr_module) =
                 , List.map
                     ~f:(List.map ~f:(update_interaction known))
                     interactions_list ) }
+      | MixedChoice interactions_list ->
+          { i with
+            Loc.value=
+              MixedChoice
+                (List.map
+                   ~f:(List.map ~f:(update_interaction known))
+                   interactions_list) }
       | Do _ | MessageTransfer _ | Continue _ -> i
     in
     let proto = protocol.value in
