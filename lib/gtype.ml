@@ -77,6 +77,7 @@ type t =
   | MuG of TypeVariableName.t * t
   | TVarG of TypeVariableName.t
   | ChoiceG of RoleName.t * t list
+  | MixedChoiceG of t list
   | EndG
   | CallG of RoleName.t * ProtocolName.t * RoleName.t list * t
 
@@ -107,6 +108,15 @@ let show =
         let pre =
           sprintf "%schoice at %s {\n" current_indent (RoleName.user r)
         in
+        let intermission = sprintf "%s} or {\n" current_indent in
+        let post = sprintf "%s}\n" current_indent in
+        let choices =
+          List.map ~f:(show_global_type_internal (indent + 1)) gs
+        in
+        let gs = String.concat ~sep:intermission choices in
+        pre ^ gs ^ post
+    | MixedChoiceG gs ->
+        let pre = sprintf "%smchoice {\n" current_indent in
         let intermission = sprintf "%s} or {\n" current_indent in
         let post = sprintf "%s}\n" current_indent in
         let choices =
@@ -199,6 +209,10 @@ let of_protocol (global_protocol : Syntax.global_protocol) =
           ChoiceG
             ( role
             , List.map ~f:(conv_interactions rec_names) interactions_list )
+      | MixedChoice interactions_list ->
+          assert_empty rest ;
+          MixedChoiceG
+            (List.map ~f:(conv_interactions rec_names) interactions_list)
       | Do (protocol, _, roles, _) ->
           (* Previously this would've been a violation *)
           let fst_role = RoleName.of_name @@ List.hd_exn roles in
@@ -252,6 +266,10 @@ let rec flatten = function
         | g -> [g]
       in
       ChoiceG (role, List.concat_map ~f:lift choices)
+  | MixedChoiceG choices ->
+      let choices = List.map ~f:flatten choices in
+      let lift = function MixedChoiceG choices_ -> choices_ | g -> [g] in
+      MixedChoiceG (List.concat_map ~f:lift choices)
   | g -> g
 
 let recursion_protocol_name protocol rec_var =
@@ -266,6 +284,8 @@ let rec get_participants rec_protocols participants = function
       let participants = Set.add participants recv in
       get_participants rec_protocols participants gtype
   | ChoiceG (_, gtypes) ->
+      List.fold ~init:participants ~f:(get_participants rec_protocols) gtypes
+  | MixedChoiceG gtypes ->
       List.fold ~init:participants ~f:(get_participants rec_protocols) gtypes
   | CallG (caller, _, roles, gtype) ->
       let participants = Set.add participants caller in
@@ -331,6 +351,12 @@ let rec convert_recursion_to_protocols protocol rec_protocols
           ~f:(convert_recursion_to_protocols protocol rec_protocols)
       in
       ((global_t, name_gen), ChoiceG (choice_role, new_gtypes))
+  | MixedChoiceG gtypes ->
+      let (global_t, name_gen), new_gtypes =
+        List.fold_map gtypes ~init:(global_t, name_gen)
+          ~f:(convert_recursion_to_protocols protocol rec_protocols)
+      in
+      ((global_t, name_gen), MixedChoiceG new_gtypes)
   | EndG -> ((global_t, name_gen), EndG)
   | CallG (caller, protocol, participants, gtype') ->
       let (global_t, name_gen), new_gtype =
@@ -380,6 +406,8 @@ let rec substitute g tvar g_sub =
   | MessageG (m, r1, r2, g_) -> MessageG (m, r1, r2, substitute g_ tvar g_sub)
   | ChoiceG (r, g_) ->
       ChoiceG (r, List.map ~f:(fun g__ -> substitute g__ tvar g_sub) g_)
+  | MixedChoiceG g_ ->
+      MixedChoiceG (List.map ~f:(fun g__ -> substitute g__ tvar g_sub) g_)
   | CallG (caller, protocol, roles, g_) ->
       CallG (caller, protocol, roles, substitute g_ tvar g_sub)
 
@@ -392,6 +420,9 @@ let rec normalise = function
   | ChoiceG (r, g_) ->
       let g_ = List.map ~f:normalise g_ in
       flatten (ChoiceG (r, g_))
+  | MixedChoiceG g_ ->
+      let g_ = List.map ~f:normalise g_ in
+      flatten (MixedChoiceG g_)
   | (EndG | TVarG _) as g -> g
   | MuG (tvar, g_) -> unfold (MuG (tvar, normalise g_))
   | CallG (caller, protocol, roles, g_) ->

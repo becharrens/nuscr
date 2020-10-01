@@ -23,20 +23,22 @@ type t =
   | ChoiceG of RoleName.t * t list
       (** [ChoiceG (name, ts)] expresses a choice located at participant
           [name] between the [ts] *)
+  | MixedChoiceG of t list
+      (** [ChoiceG (ts)] expresses a mixed choice between the [ts] *)
   | EndG  (** Empty global type *)
   | CallG of RoleName.t * ProtocolName.t * RoleName.t list * t
       (** [CallG (caller, protocol, participants, t)] - [caller] calls
           [protocol], inviting [participants] to carry out the roles in
           [protocol] (dynamic roles in nested protocols are not included) *)
 
-(** Mapping of protocol name to the roles ('static' participants, dynamic
-    participants) participating in the protocol, the names of the nested
-    protocols defined inside it and its global type*)
 type global_t =
   ( ProtocolName.t
   , (RoleName.t list * RoleName.t list) * ProtocolName.t list * t
   , ProtocolName.comparator_witness )
   Map.t
+(** Mapping of protocol name to the roles ('static' participants, dynamic
+    participants) participating in the protocol, the names of the nested
+    protocols defined inside it and its global type*)
 
 val show : t -> string
 (** Provides a textual representation of a global type *)
