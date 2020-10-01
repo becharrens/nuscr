@@ -34,6 +34,7 @@
 %token FROM_KW
 %token TO_KW
 %token CHOICE_KW
+%token MCHOICE_KW
 %token AT_KW
 %token OR_KW
 %token REC_KW
@@ -220,6 +221,7 @@ let raw_global_interaction ==
   | global_recursion
   | global_continue
   | global_choice
+  | global_mixed_choice
   | global_do
   | global_calls
 let global_do ==
@@ -248,6 +250,11 @@ let global_choice ==
   CHOICE_KW ; AT_KW ; ~ = name ;
   ~ = separated_nonempty_list(OR_KW, global_protocol_block) ;
   < Choice >
+
+let global_mixed_choice ==
+  MCHOICE_KW ;
+  ~ = separated_nonempty_list(OR_KW, global_protocol_block) ;
+  < MixedChoice >
 
 let global_continue ==
   CONTINUE_KW ; ~ = name ; SEMICOLON ; < Continue >

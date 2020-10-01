@@ -107,6 +107,7 @@ and token = parse
 | "from" { FROM_KW }
 | "to" { TO_KW }
 | "choice" { CHOICE_KW }
+| "mchoice" { MCHOICE_KW }
 | "at" { AT_KW }
 | "or" { OR_KW }
 | "rec" { REC_KW }
