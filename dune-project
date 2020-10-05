@@ -46,6 +46,8 @@
   (odoc :with-doc)
   (ocamlgraph
    (>= 1.8.8))
+  (unionFind
+   (>= 20200320))
   (ppxlib
    (and
    (>= 0.9.0)
