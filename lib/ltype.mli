@@ -16,6 +16,13 @@ type t =
   | ChoiceL of RoleName.t * t list
       (** [ChoiceL (name, ts)] is a choice (internal or external) from [name]
           between the [ts] *)
+  | UnmergedMixedChoiceL of mIndependentChoice list
+      (** [UnmergedMixedChoiceL id_choices] is a mixed choice between
+          different independent choices [id_choices] where the all the
+          branches in each independent choice have not been merged *)
+  | MixedChoiceL of t list
+      (** [MixedChoiceL ts] is a mixed choice between the [ts] after merging
+          all the branches*)
   | TVarL of TypeVariableName.t  (** Recursive variable *)
   | MuL of TypeVariableName.t * t  (** Fixpoint *)
   | EndL  (** Empty type *)
@@ -29,6 +36,13 @@ type t =
       * RoleName.t list
       * RoleName.t
       * t  (** accept role'\@Proto(roles...; new roles'...) from X; t *)
+
+(** An independent choice groups all branches of a mixed choice where the
+    participants of the first interactions of any two branches have at least
+    1 participant in common (transitively) - e.g [a->b + b->c + c->d] would
+    all be under the same independent choice *)
+and mIndependentChoice =
+  (t * (RoleName.t * RoleName.t)) list * (t * (RoleName.t * RoleName.t)) list
 
 module type S = sig
   type t [@@deriving show {with_path= false}, sexp_of]
@@ -58,6 +72,9 @@ val project : RoleName.t -> Gtype.t -> t
 
 val project_global_t : Gtype.global_t -> local_t
 (** Generate the local protocols for a given global_t *)
+
+val unmerged_project : RoleName.t -> Gtype.t -> t
+(** Project a global type into a particular role without merging *)
 
 (** Mapping from local protocol ids to their unique local protocol names *)
 type local_proto_name_lookup =

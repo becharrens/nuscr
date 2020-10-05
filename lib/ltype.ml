@@ -8,6 +8,8 @@ type t =
   | RecvL of Gtype.message * RoleName.t * t
   | SendL of Gtype.message * RoleName.t * t
   | ChoiceL of RoleName.t * t list
+  | UnmergedMixedChoiceL of mIndependentChoice list
+  | MixedChoiceL of t list
   | TVarL of TypeVariableName.t
   | MuL of TypeVariableName.t * t
   | EndL
@@ -20,6 +22,9 @@ type t =
       * RoleName.t
       * t
 [@@deriving sexp_of, eq]
+
+and mIndependentChoice =
+  (t * (RoleName.t * RoleName.t)) list * (t * (RoleName.t * RoleName.t)) list
 
 module type S = sig
   type t [@@deriving show {with_path= false}, sexp_of]
@@ -85,6 +90,32 @@ let show =
         let post = sprintf "%s}\n" current_indent in
         let choices =
           List.map ~f:(show_local_type_internal (indent + 1)) ls
+        in
+        let ls = String.concat ~sep:intermission choices in
+        pre ^ ls ^ post
+    | MixedChoiceL ls ->
+        let pre = sprintf "%smchoice {\n" current_indent in
+        let intermission = sprintf "%s} or {\n" current_indent in
+        let post = sprintf "%s}\n" current_indent in
+        let choices =
+          List.map ~f:(show_local_type_internal (indent + 1)) ls
+        in
+        let ls = String.concat ~sep:intermission choices in
+        pre ^ ls ^ post
+    | UnmergedMixedChoiceL id_choices ->
+        let extract_ltypes ((ls1, ls2) : mIndependentChoice) =
+          let ltypes1, _ = List.unzip ls1 in
+          let ltypes2, _ = List.unzip ls2 in
+          ltypes1 @ ltypes2
+        in
+        let all_ltypes =
+          List.concat @@ List.map id_choices ~f:extract_ltypes
+        in
+        let pre = sprintf "%smchoice {\n" current_indent in
+        let intermission = sprintf "%s} or {\n" current_indent in
+        let post = sprintf "%s}\n" current_indent in
+        let choices =
+          List.map ~f:(show_local_type_internal (indent + 1)) all_ltypes
         in
         let ls = String.concat ~sep:intermission choices in
         pre ^ ls ^ post
@@ -374,6 +405,10 @@ let rec project' (global_t : global_t) (projected_role : RoleName.t) =
       | _ when is_caller -> gen_invitecreatel next
       | _ when is_participant -> gen_acceptl next
       | _ -> next )
+  | MixedChoiceG _ ->
+      Violation
+        "The mixed choice constructor should not be here. This cannot be!"
+      |> raise
 
 let project projected_role g =
   project' (Map.empty (module ProtocolName)) projected_role g
@@ -395,3 +430,23 @@ let project_global_t (global_t : global_t) =
         ~f:(project_role key all_roles gtype)
         all_roles)
     global_t
+
+let rec unmerged_project projected_role = function
+  | EndG -> EndL
+  | TVarG name -> TVarL name
+  | MuG (name, g_type) -> MuL (name, unmerged_project projected_role g_type)
+  | MessageG (m, send_r, recv_r, g_type) -> (
+      let next = unmerged_project projected_role g_type in
+      match projected_role with
+      | _ when RoleName.equal projected_role send_r -> SendL (m, recv_r, next)
+      | _ when RoleName.equal projected_role recv_r -> RecvL (m, send_r, next)
+      | _ -> next )
+  | MixedChoiceG _ -> EndL
+  | ChoiceG (_, _) ->
+      Violation
+        "The mixed choice constructor should not be here. This cannot be!"
+      |> raise
+  | CallG (_, _, _, _) ->
+      Violation
+        "The mixed choice constructor should not be here. This cannot be!"
+      |> raise

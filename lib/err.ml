@@ -20,6 +20,8 @@ type user_error =
   | UnboundProtocol of ProtocolName.t
   | ArityMismatch of ProtocolName.t * int * int
   | InconsistentNestedChoice of RoleName.t * RoleName.t
+  | InconsistentMixedChoice of string
+  | InvalidMixedChoice of string
   | RoleMismatch of RoleName.t * RoleName.t
   | DuplicateLabel of LabelName.t
   | DuplicateRoleArgs of ProtocolName.t
@@ -74,6 +76,8 @@ let show_user_error = function
       ^ show_source_loc (RoleName.where r1)
       ^ " cannot be followed with a choice at " ^ RoleName.user r2 ^ " at "
       ^ show_source_loc (RoleName.where r2)
+  | InconsistentMixedChoice str -> "Inconsistent mixed choice: " ^ str
+  | InvalidMixedChoice str -> "Invalid mixed choice: " ^ str
   | RoleMismatch (expected, actual) ->
       "Expecting role " ^ RoleName.user expected ^ ", but got "
       ^ RoleName.user actual ^ " at "

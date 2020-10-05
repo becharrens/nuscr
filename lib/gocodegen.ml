@@ -74,6 +74,10 @@ let ensure_unique_identifiers (global_t : global_t) =
       | MessageG (msg, _, _, g) ->
           let messages = add_consistent_msg messages msg in
           validate_protocol_msgs messages g
+      | MixedChoiceG _ ->
+          Err.Violation
+            "The mixed choice constructor should not be here. This cannot \
+             be!" |> raise
     in
     let protocol_names = add_unique_protocol_name protocol_names key in
     let (roles, new_roles), _, gtype = data in
@@ -805,6 +809,10 @@ let rec gen_message_structs msgs_env = function
         MessagesEnv.add_message_struct msgs_env label payload
       in
       gen_message_structs msgs_env g
+  | MixedChoiceG _ ->
+      Err.Violation
+        "The mixed choice constructor should not be here. This cannot be!"
+      |> raise
 
 (** Generate implementation of a role from its local type *)
 let gen_role_implementation protocol_setup_env ltype_env global_t
@@ -938,6 +946,10 @@ let gen_role_implementation protocol_setup_env ltype_env global_t
         in
         ( (env, var_name_gen)
         , join_non_empty_lines ~sep:"\n\n" [send_impl_str; impl] )
+    | UnmergedMixedChoiceL _ | MixedChoiceL _ ->
+        Err.Violation
+          "Mixed choice should never be here. This should not happen!"
+        |> raise
   in
   let indent = incr_indent "" in
   let var_name_gen = Namegen.create () in
@@ -953,7 +965,6 @@ let gen_role_implementation protocol_setup_env ltype_env global_t
   in
   (env, impl)
 
-(** Result of code generation process *)
 type codegen_result =
   { messages: (ProtocolName.t, string, ProtocolName.comparator_witness) Map.t
   ; channels: (ProtocolName.t, string, ProtocolName.comparator_witness) Map.t
@@ -973,6 +984,7 @@ type codegen_result =
   ; protocol_setup:
       (ProtocolName.t, string, ProtocolName.comparator_witness) Map.t
   ; entry_point: string }
+(** Result of code generation process *)
 
 (** Generate empty code gen result *)
 let empty_result () : codegen_result =
