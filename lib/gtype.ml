@@ -72,6 +72,31 @@ let of_syntax_message (message : Syntax.message) =
       ; payload= List.map ~f:of_syntax_payload payload }
   | MessageName name -> {label= LabelName.of_name name; payload= []}
 
+module type S = sig
+  type t [@@deriving sexp_of]
+
+  val show : t -> string
+
+  val create : RoleName.t -> RoleName.t -> message -> t
+
+  include Comparable.S with type t := t
+end
+
+module GAction = struct
+  module M = struct
+    type t = RoleName.t * RoleName.t * message [@@deriving sexp_of, ord]
+
+    let show ((r1, r2, m) : t) =
+      sprintf "%s->%s:%s" (RoleName.user r1) (RoleName.user r2)
+        (show_message m)
+
+    let create r1 r2 m : t = (r1, r2, m)
+  end
+
+  include M
+  include Comparable.Make (M)
+end
+
 type t =
   | MessageG of message * RoleName.t * RoleName.t * t
   | MuG of TypeVariableName.t * t
@@ -436,3 +461,226 @@ let normalise_global_t (global_t : global_t) =
   Map.fold
     ~init:(Map.empty (module ProtocolName))
     ~f:normalise_protocol global_t
+
+let rename_tvars tvars new_tvar gtype =
+  let rec rename = function
+    | MessageG (m, r1, r2, g_) -> MessageG (m, r1, r2, rename g_)
+    | ChoiceG (r, gtypes) ->
+        let gtypes = List.map ~f:rename gtypes in
+        ChoiceG (r, gtypes)
+    | MixedChoiceG gtypes ->
+        let gtypes = List.map ~f:rename gtypes in
+        MixedChoiceG gtypes
+    | EndG -> EndG
+    | TVarG tvar as g -> if Set.mem tvars tvar then TVarG new_tvar else g
+    | MuG (tvar, g_) -> MuG (tvar, rename g_)
+    | CallG (caller, protocol, roles, g_) ->
+        CallG (caller, protocol, roles, rename g_)
+  in
+  rename gtype
+
+let make_unique_tvars gtype =
+  let rec make_unique name_gen = function
+    | MessageG (m, r1, r2, g_) ->
+        let name_gen, g = make_unique name_gen g_ in
+        (name_gen, MessageG (m, r1, r2, g))
+    | ChoiceG (r, gtypes) ->
+        let name_gen, gtypes =
+          List.fold_map ~init:name_gen ~f:make_unique gtypes
+        in
+        (name_gen, ChoiceG (r, gtypes))
+    | MixedChoiceG gtypes ->
+        let name_gen, gtypes =
+          List.fold_map ~init:name_gen ~f:make_unique gtypes
+        in
+        (name_gen, MixedChoiceG gtypes)
+    | (EndG | TVarG _) as g -> (name_gen, g)
+    | MuG (tvar, g_) ->
+        let curr_tvar_str = TypeVariableName.user tvar in
+        let name_gen, new_tvar_str =
+          Namegen.unique_name name_gen curr_tvar_str
+        in
+        let g_, tvar =
+          if not (String.equal curr_tvar_str new_tvar_str) then
+            let new_tvar = TypeVariableName.rename tvar new_tvar_str in
+            let tvars = Set.singleton (module TypeVariableName) tvar in
+            (rename_tvars tvars new_tvar g_, new_tvar)
+          else (g_, tvar)
+        in
+        let name_gen, g_ = make_unique name_gen g_ in
+        (name_gen, MuG (tvar, g_))
+    | CallG (caller, protocol, roles, g_) ->
+        let name_gen, g_ = make_unique name_gen g_ in
+        (name_gen, CallG (caller, protocol, roles, g_))
+  in
+  let name_gen = Namegen.create () in
+  let _, gtype = make_unique name_gen gtype in
+  gtype
+
+let build_tvar_mapping gtype =
+  let rec build_mapping mapping = function
+    | MessageG (_, _, _, g_) -> build_mapping mapping g_
+    | ChoiceG (_, gtypes) -> List.fold ~init:mapping ~f:build_mapping gtypes
+    | MixedChoiceG gtypes -> List.fold ~init:mapping ~f:build_mapping gtypes
+    | EndG | TVarG _ -> mapping
+    | MuG (tvar, g_) as g ->
+        build_mapping (Map.add_exn mapping ~key:tvar ~data:g) g_
+    | CallG (_, _, _, g_) -> build_mapping mapping g_
+  in
+  build_mapping (Map.empty (module TypeVariableName)) gtype
+
+let rec flatten_recursion tvar flattened_tvars = function
+  | MuG (tvar_, gtype) ->
+      flatten_recursion tvar (Set.add flattened_tvars tvar_) gtype
+  | g ->
+      if Set.length flattened_tvars > 0 then
+        rename_tvars flattened_tvars tvar g
+      else g
+
+let first_actions tvar_mapping gtype =
+  let rec get_first_actions expanded_tvars = function
+    | MessageG (m, r1, r2, _) ->
+        let actions = Set.empty (module GAction) in
+        Set.add actions (GAction.create r1 r2 m)
+    | ChoiceG (_, gtypes) ->
+        List.fold
+          ~init:(Set.empty (module GAction))
+          ~f:(fun actions g ->
+            Set.union actions (get_first_actions expanded_tvars g))
+          gtypes
+    | MixedChoiceG gtypes ->
+        List.fold
+          ~init:(Set.empty (module GAction))
+          ~f:(fun actions g ->
+            Set.union actions (get_first_actions expanded_tvars g))
+          gtypes
+    | EndG -> Set.empty (module GAction)
+    | TVarG tvar ->
+        if Set.mem expanded_tvars tvar then Set.empty (module GAction)
+        else
+          let rec_type = Map.find_exn tvar_mapping tvar in
+          get_first_actions (Set.add expanded_tvars tvar) rec_type
+    | MuG (_, g) -> get_first_actions expanded_tvars g
+    | CallG _ ->
+        Violation "First actions of protocol call are not defined" |> raise
+  in
+  get_first_actions (Set.empty (module TypeVariableName)) gtype
+
+let normalise_recursion g =
+  let rec flatten_gtype = function
+    | MessageG (m, r1, r2, g_) -> MessageG (m, r1, r2, flatten_gtype g_)
+    | ChoiceG (r, gtypes) ->
+        let g_ = List.map ~f:flatten_gtype gtypes in
+        flatten (ChoiceG (r, g_))
+    | MixedChoiceG gtypes ->
+        let gtypes = List.map ~f:flatten_gtype gtypes in
+        flatten (MixedChoiceG gtypes)
+    | (EndG | TVarG _) as g -> g
+    | MuG (tvar, g_) ->
+        let gtype =
+          flatten_recursion tvar (Set.empty (module TypeVariableName)) g_
+        in
+        let gtype = flatten_gtype gtype in
+        MuG (tvar, gtype)
+    | CallG (caller, protocol, roles, g_) ->
+        CallG (caller, protocol, roles, flatten_gtype g_)
+  in
+  let rec remove_idle_choices tvar_mapping = function
+    | MessageG (m, r1, r2, g_) ->
+        MessageG (m, r1, r2, remove_idle_choices tvar_mapping g_)
+    | ChoiceG (r, gtypes) ->
+        let non_idle_gtypes =
+          List.filter gtypes ~f:(fun g ->
+              Set.length (first_actions tvar_mapping g) > 0)
+        in
+        if List.is_empty non_idle_gtypes then EndG
+        else ChoiceG (r, non_idle_gtypes)
+    | MixedChoiceG gtypes ->
+        let non_idle_gtypes =
+          List.filter gtypes ~f:(fun g ->
+              Set.length (first_actions tvar_mapping g) > 0)
+        in
+        if List.is_empty non_idle_gtypes then EndG
+        else MixedChoiceG non_idle_gtypes
+    | (EndG | TVarG _) as g -> g
+    | MuG (tvar, g_) ->
+        let gtype = remove_idle_choices tvar_mapping g_ in
+        MuG (tvar, gtype)
+    | CallG (caller, protocol, roles, g_) ->
+        CallG (caller, protocol, roles, remove_idle_choices tvar_mapping g_)
+  in
+  let g = flatten_gtype g in
+  let mapping = build_tvar_mapping g in
+  remove_idle_choices mapping g
+
+type union_find_elem = (t list * int) UnionFind.elem
+
+type union_find =
+  { leaders: (Int.t, union_find_elem, Int.comparator_witness) Map.t
+  ; elems: (RoleName.t, union_find_elem, RoleName.comparator_witness) Map.t
+  ; uid: int }
+
+let split_mchoice_branches tvar_mapping gtypes =
+  (* Assume that all gtypes have some actions *)
+  let add_gtype ({leaders; elems; uid} as ufind) gtype =
+    let add_branch root =
+      let gtypes, uid = UnionFind.get root in
+      UnionFind.set root (gtype :: gtypes, uid)
+    in
+    let fst_actions = first_actions tvar_mapping gtype in
+    if Set.length fst_actions > 1 then
+      uerr
+        (InvalidMixedChoice
+           "Every branch in a mixed choice should have at most one first \
+            action")
+      |> raise ;
+    let r1, r2, _ = Set.choose_exn fst_actions in
+    let elem1 = Map.find elems r1 in
+    let elem2 = Map.find elems r2 in
+    match (elem1, elem2) with
+    | Some e1, Some e2 ->
+        let root1 = UnionFind.find e1 in
+        let root2 = UnionFind.find e2 in
+        if UnionFind.eq root1 root2 then (add_branch root1 ; ufind)
+        else
+          let gtypes1, uid1 = UnionFind.get root1 in
+          let gtypes2, uid2 = UnionFind.get root2 in
+          let new_root = UnionFind.union root1 root2 in
+          let _, uid = UnionFind.get new_root in
+          UnionFind.set new_root (gtype :: (gtypes1 @ gtypes2), uid) ;
+          if uid = uid1 then
+            let leaders = Map.remove leaders uid2 in
+            {ufind with leaders}
+          else
+            let leaders = Map.remove leaders uid1 in
+            {ufind with leaders}
+    | Some e1, None ->
+        let root = UnionFind.find e1 in
+        add_branch root ;
+        let elems = Map.add_exn elems ~key:r2 ~data:root in
+        {ufind with elems}
+    | None, Some e2 ->
+        let root = UnionFind.find e2 in
+        add_branch root ;
+        let elems = Map.add_exn elems ~key:r1 ~data:root in
+        {ufind with elems}
+    | None, None ->
+        let root = UnionFind.make ([gtype], uid) in
+        let elems = Map.add_exn elems ~key:r1 ~data:root in
+        let elems = Map.add_exn elems ~key:r2 ~data:root in
+        let leaders = Map.add_exn leaders ~key:uid ~data:root in
+        {leaders; elems; uid= uid + 1}
+  in
+  let ufind =
+    { leaders= Map.empty (module Int)
+    ; elems= Map.empty (module RoleName)
+    ; uid= 0 }
+  in
+  let {leaders; _} = List.fold ~init:ufind ~f:add_gtype gtypes in
+  let ufind_elems = Map.data leaders in
+  let gtypes =
+    List.map ufind_elems ~f:(fun e ->
+        let gtypes, _ = UnionFind.get e in
+        gtypes)
+  in
+  gtypes

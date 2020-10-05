@@ -13,6 +13,18 @@ type message = {label: LabelName.t; payload: payload list}
 
 val equal_pvalue_payload : payload -> payload -> bool
 
+module type S = sig
+  type t [@@deriving sexp_of]
+
+  val show : t -> string
+
+  val create : RoleName.t -> RoleName.t -> message -> t
+
+  include Comparable.S with type t := t
+end
+
+module GAction : S
+
 (** The type of global types *)
 type t =
   | MessageG of message * RoleName.t * RoleName.t * t
@@ -31,14 +43,14 @@ type t =
           [protocol], inviting [participants] to carry out the roles in
           [protocol] (dynamic roles in nested protocols are not included) *)
 
+(** Mapping of protocol name to the roles ('static' participants, dynamic
+    participants) participating in the protocol, the names of the nested
+    protocols defined inside it and its global type*)
 type global_t =
   ( ProtocolName.t
   , (RoleName.t list * RoleName.t list) * ProtocolName.t list * t
   , ProtocolName.comparator_witness )
   Map.t
-(** Mapping of protocol name to the roles ('static' participants, dynamic
-    participants) participating in the protocol, the names of the nested
-    protocols defined inside it and its global type*)
 
 val show : t -> string
 (** Provides a textual representation of a global type *)
@@ -66,3 +78,14 @@ val normalise_global_t : global_t -> global_t
 
 val replace_recursion_with_nested_protocols : global_t -> global_t
 (** Replace the MuG type with explicit calls to nested protocols*)
+
+val normalise_recursion : t -> t
+(** Flatten directed and mixed choices, multiple replace consecutive
+    recursive constructs by a single one (renaming tvars) and set the
+    recursive type of tvars to the corresponding normalised recursive
+    construct *)
+
+val first_actions :
+     (TypeVariableName.t, t, TypeVariableName.comparator_witness) Map.t
+  -> t
+  -> (GAction.t, GAction.comparator_witness) Set.t

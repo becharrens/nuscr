@@ -984,6 +984,10 @@ end = struct
             protocol_lookup
         in
         generate_channel_vars global_t protocol_lookup env gtype
+    | MixedChoiceG _ ->
+        Err.Violation
+          "The mixed choice constructor should not be here. This cannot be!"
+        |> raise
 
   let gen_role_channel_struct_assign channel_envs pkg indent ~key:role
       ~data:chan_fields (var_name_gen, role_struct_vars, struct_assignments)
