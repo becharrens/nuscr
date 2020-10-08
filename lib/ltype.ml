@@ -3,6 +3,23 @@ open Printf
 open Gtype
 open Err
 open Names
+open Monads
+
+module type RoleSet = sig
+  type t = Set.M(RoleName).t
+
+  val equal : t -> t -> bool
+
+  val sexp_of_t : t -> Sexp.t
+end
+
+module RoleNameSet = struct
+  type t = Set.M(RoleName).t
+
+  let equal (s1 : t) (s2 : t) = Set.equal s1 s2
+
+  let sexp_of_t (s : t) = Set.sexp_of_m__t (module RoleName) s
+end
 
 type t =
   | RecvL of Gtype.message * RoleName.t * t
@@ -24,7 +41,7 @@ type t =
 [@@deriving sexp_of, eq]
 
 and mIndependentChoice =
-  (t * (RoleName.t * RoleName.t)) list * (t * (RoleName.t * RoleName.t)) list
+  (t * RoleNameSet.t) list * (t * RoleNameSet.t) list * bool
 
 module type S = sig
   type t [@@deriving show {with_path= false}, sexp_of]
@@ -103,7 +120,7 @@ let show =
         let ls = String.concat ~sep:intermission choices in
         pre ^ ls ^ post
     | UnmergedMixedChoiceL id_choices ->
-        let extract_ltypes ((ls1, ls2) : mIndependentChoice) =
+        let extract_ltypes ((ls1, ls2, _) : mIndependentChoice) =
           let ltypes1, _ = List.unzip ls1 in
           let ltypes2, _ = List.unzip ls2 in
           ltypes1 @ ltypes2
@@ -431,22 +448,158 @@ let project_global_t (global_t : global_t) =
         all_roles)
     global_t
 
-let rec unmerged_project projected_role = function
-  | EndG -> EndL
-  | TVarG name -> TVarL name
-  | MuG (name, g_type) -> MuL (name, unmerged_project projected_role g_type)
-  | MessageG (m, send_r, recv_r, g_type) -> (
-      let next = unmerged_project projected_role g_type in
-      match projected_role with
-      | _ when RoleName.equal projected_role send_r -> SendL (m, recv_r, next)
-      | _ when RoleName.equal projected_role recv_r -> RecvL (m, send_r, next)
-      | _ -> next )
-  | MixedChoiceG _ -> EndL
-  | ChoiceG (_, _) ->
-      Violation
-        "The mixed choice constructor should not be here. This cannot be!"
-      |> raise
-  | CallG (_, _, _, _) ->
-      Violation
-        "The mixed choice constructor should not be here. This cannot be!"
-      |> raise
+type partition_state =
+  { checked: (int, Int.comparator_witness) Set.t
+  ; disjoint_branches: (t * RoleNameSet.t) list
+  ; common_branches: (t * RoleNameSet.t) list
+  ; participates_in_disjoint_decisions: bool
+  ; decision_role_in_curr_branch: bool
+  ; disjoint: bool }
+
+let empty_partition_state =
+  { checked= Set.empty (module Int)
+  ; disjoint_branches= []
+  ; common_branches= []
+  ; participates_in_disjoint_decisions= false
+  ; decision_role_in_curr_branch= false
+  ; disjoint= false }
+
+module IdChoicePartition = struct
+  include Monads.State (struct
+    type s = partition_state
+  end)
+
+  let add_disjoint_branch branch =
+    let* state = get in
+    set {state with disjoint_branches= branch :: state.disjoint_branches}
+
+  let add_common_branch branch =
+    let* state = get in
+    set {state with common_branches= branch :: state.common_branches}
+
+  let is_disjoint =
+    let* state = get in
+    return state.disjoint
+
+  let set_disjoint b =
+    let* state = get in
+    set {state with disjoint= b}
+
+  let set_participates_in_disjoint_decision b =
+    let* state = get in
+    set {state with participates_in_disjoint_decisions= b}
+
+  let is_decision_role_in_curr_branch =
+    let* state = get in
+    return state.decision_role_in_curr_branch
+
+  let set_decision_role_in_curr_branch b =
+    let* state = get in
+    set {state with decision_role_in_curr_branch= b}
+
+  let is_checked_branch (idx : int) =
+    let* state = get in
+    return (Set.mem state.checked idx)
+
+  let add_checked_branch (idx : int) =
+    let* state = get in
+    set {state with checked= Set.add state.checked idx}
+
+  let partition_branches role branches =
+    let rec split_branches i branches =
+      let rec partition j decision_roles = function
+        | [] -> return ()
+        | ((_, branch_decision_roles) as branch) :: branches ->
+            let* is_checked = is_checked_branch j in
+            if is_checked then partition (j + 1) decision_roles branches
+            else if Set.are_disjoint branch_decision_roles decision_roles
+            then
+              let* _ = add_checked_branch j in
+              let* decision_role_in_i = is_decision_role_in_curr_branch in
+              if decision_role_in_i then
+                let* _ = add_disjoint_branch branch in
+                let* _ = set_participates_in_disjoint_decision true in
+                partition (j + 1) decision_roles branches
+              else
+                let* _ = set_disjoint true in
+                if Set.mem branch_decision_roles role then
+                  let* _ = add_common_branch branch in
+                  let* _ = set_participates_in_disjoint_decision true in
+                  partition (j + 1) decision_roles branches
+                else
+                  let* _ = add_disjoint_branch branch in
+                  partition (j + 1) decision_roles branches
+            else partition (j + 1) decision_roles branches
+      in
+      match branches with
+      | [] ->
+          let* state = get in
+          return
+            ( state.common_branches
+            , state.disjoint_branches
+            , state.participates_in_disjoint_decisions )
+      | ((_, decision_roles) as branch) :: branches ->
+          let* is_checked = is_checked_branch i in
+          if is_checked then split_branches (i + 1) branches
+          else
+            let* _ =
+              set_decision_role_in_curr_branch (Set.mem decision_roles role)
+            in
+            let* _ = set_disjoint false in
+            let* _ = partition (i + 1) decision_roles branches in
+            let* is_disjoint_branch = is_disjoint in
+            let* _ =
+              if is_disjoint_branch then add_disjoint_branch branch
+              else add_common_branch branch
+            in
+            split_branches (i + 1) branches
+    in
+    split_branches 0 branches
+end
+
+let unmerged_project tvar_mapping projected_role gtype =
+  let rec project_gtype = function
+    | EndG -> EndL
+    | TVarG name -> TVarL name
+    | MuG (name, gtype) -> MuL (name, project_gtype gtype)
+    | MessageG (m, send_r, recv_r, gtype) -> (
+        let next = project_gtype gtype in
+        match projected_role with
+        | _ when RoleName.equal projected_role send_r ->
+            SendL (m, recv_r, next)
+        | _ when RoleName.equal projected_role recv_r ->
+            RecvL (m, send_r, next)
+        | _ -> next )
+    | MixedChoiceG gtypes ->
+        let id_choice_branches =
+          split_mchoice_branches tvar_mapping gtypes
+        in
+        let id_choices =
+          List.map id_choice_branches ~f:(fun gtypes ->
+              List.map gtypes ~f:(fun gtype ->
+                  (project_gtype gtype, get_decision_roles tvar_mapping gtype)))
+        in
+        let choices =
+          List.map id_choices ~f:(fun branches ->
+              let _, res =
+                IdChoicePartition.run
+                  (IdChoicePartition.partition_branches projected_role
+                     branches)
+                  empty_partition_state
+              in
+              match res with
+              | Yes id_partition -> id_partition
+              | No e -> uerr e
+              (* 2nd case should be unreachable *))
+        in
+        UnmergedMixedChoiceL choices
+    | ChoiceG (_, _) ->
+        Violation
+          "The directed choice constructor should not be here. This cannot \
+           be!" |> raise
+    | CallG (_, _, _, _) ->
+        Violation
+          "The protocol call constructor should not be here. This cannot be!"
+        |> raise
+  in
+  project_gtype gtype

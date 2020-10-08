@@ -5,6 +5,17 @@ open! Base
 
 open Names
 
+module type RoleSet = sig
+  type t = Set.M(RoleName).t
+
+  val equal : t -> t -> bool
+
+  val sexp_of_t : t -> Sexp.t
+end
+
+(** Module which defines equal and sexp_of functions for a set of role names *)
+module RoleNameSet : RoleSet
+
 (** Local types. *)
 type t =
   | RecvL of Gtype.message * RoleName.t * t
@@ -20,6 +31,7 @@ type t =
       (** [UnmergedMixedChoiceL id_choices] is a mixed choice between
           different independent choices [id_choices] where the all the
           branches in each independent choice have not been merged *)
+  (* | UnmergedMixedChoiceL of mIndependentChoice list *)
   | MixedChoiceL of t list
       (** [MixedChoiceL ts] is a mixed choice between the [ts] after merging
           all the branches*)
@@ -42,7 +54,7 @@ type t =
     1 participant in common (transitively) - e.g [a->b + b->c + c->d] would
     all be under the same independent choice *)
 and mIndependentChoice =
-  (t * (RoleName.t * RoleName.t)) list * (t * (RoleName.t * RoleName.t)) list
+  (t * RoleNameSet.t) list * (t * RoleNameSet.t) list * bool
 
 module type S = sig
   type t [@@deriving show {with_path= false}, sexp_of]
@@ -73,8 +85,13 @@ val project : RoleName.t -> Gtype.t -> t
 val project_global_t : Gtype.global_t -> local_t
 (** Generate the local protocols for a given global_t *)
 
-val unmerged_project : RoleName.t -> Gtype.t -> t
-(** Project a global type into a particular role without merging *)
+val unmerged_project :
+     (TypeVariableName.t, Gtype.t, TypeVariableName.comparator_witness) Map.t
+  -> RoleName.t
+  -> Gtype.t
+  -> t
+(** Project a global type into a particular role without merging the branches
+    of the mixed choices *)
 
 (** Mapping from local protocol ids to their unique local protocol names *)
 type local_proto_name_lookup =
