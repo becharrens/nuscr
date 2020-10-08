@@ -20,6 +20,8 @@ module type S = sig
 
   val create : RoleName.t -> RoleName.t -> message -> t
 
+  val participants : t -> (RoleName.t, RoleName.comparator_witness) Set.t
+
   include Comparable.S with type t := t
 end
 
@@ -79,13 +81,33 @@ val normalise_global_t : global_t -> global_t
 val replace_recursion_with_nested_protocols : global_t -> global_t
 (** Replace the MuG type with explicit calls to nested protocols*)
 
-val normalise_recursion : t -> t
-(** Flatten directed and mixed choices, multiple replace consecutive
-    recursive constructs by a single one (renaming tvars) and set the
-    recursive type of tvars to the corresponding normalised recursive
-    construct *)
+val normalise_and_flatten : t -> t
+(** Replace consecutive recursive constructs by a single one (renaming tvars)
+    and flatten directed and mixed choices, while removing branches idle
+    branches (branches with no actions) *)
+
+val make_unique_tvars : t -> t
+(** Rename recursive variables in the protocol to ensure that they are
+    globally unique *)
+
+val build_tvar_mapping :
+  t -> (TypeVariableName.t, t, TypeVariableName.comparator_witness) Map.t
+(**  *)
 
 val first_actions :
      (TypeVariableName.t, t, TypeVariableName.comparator_witness) Map.t
   -> t
   -> (GAction.t, GAction.comparator_witness) Set.t
+(** Return the set of first actions which can be carried out in the global
+    type *)
+
+val get_decision_roles :
+     (TypeVariableName.t, t, TypeVariableName.comparator_witness) Map.t
+  -> t
+  -> (RoleName.t, RoleName.comparator_witness) Set.t
+
+val split_mchoice_branches :
+     (TypeVariableName.t, t, TypeVariableName.comparator_witness) Map.t
+  -> t list
+  -> t list list
+(** Given a list of the global types in a mixed choice, *)

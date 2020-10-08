@@ -79,6 +79,8 @@ module type S = sig
 
   val create : RoleName.t -> RoleName.t -> message -> t
 
+  val participants : t -> (RoleName.t, RoleName.comparator_witness) Set.t
+
   include Comparable.S with type t := t
 end
 
@@ -91,6 +93,10 @@ module GAction = struct
         (show_message m)
 
     let create r1 r2 m : t = (r1, r2, m)
+
+    let participants ((r1, r2, _) : t) :
+        (RoleName.t, RoleName.comparator_witness) Set.t =
+      Set.of_list (module RoleName) [r1; r2]
   end
 
   include M
@@ -566,7 +572,7 @@ let first_actions tvar_mapping gtype =
   in
   get_first_actions (Set.empty (module TypeVariableName)) gtype
 
-let normalise_recursion g =
+let normalise_and_flatten g =
   let rec flatten_gtype = function
     | MessageG (m, r1, r2, g_) -> MessageG (m, r1, r2, flatten_gtype g_)
     | ChoiceG (r, gtypes) ->
@@ -588,18 +594,25 @@ let normalise_recursion g =
   let rec remove_idle_choices tvar_mapping = function
     | MessageG (m, r1, r2, g_) ->
         MessageG (m, r1, r2, remove_idle_choices tvar_mapping g_)
-    | ChoiceG (r, gtypes) ->
+    | ChoiceG (_, gtypes) as gtype ->
         let non_idle_gtypes =
           List.filter gtypes ~f:(fun g ->
               Set.length (first_actions tvar_mapping g) > 0)
         in
-        if List.is_empty non_idle_gtypes then EndG
-        else ChoiceG (r, non_idle_gtypes)
+        (* TODO: Should this be raising an exception? *)
+        if not (List.length non_idle_gtypes = List.length gtypes) then
+          Violation
+            "None of the branches of a directed choice should be empty"
+          |> raise
+        else gtype
+        (* if List.is_empty non_idle_gtypes then EndG else ChoiceG (r,
+           non_idle_gtypes) *)
     | MixedChoiceG gtypes ->
         let non_idle_gtypes =
           List.filter gtypes ~f:(fun g ->
               Set.length (first_actions tvar_mapping g) > 0)
         in
+        (* TODO: Should this be raising an exception? *)
         if List.is_empty non_idle_gtypes then EndG
         else MixedChoiceG non_idle_gtypes
     | (EndG | TVarG _) as g -> g
@@ -609,6 +622,7 @@ let normalise_recursion g =
     | CallG (caller, protocol, roles, g_) ->
         CallG (caller, protocol, roles, remove_idle_choices tvar_mapping g_)
   in
+  let g = make_unique_tvars g in
   let g = flatten_gtype g in
   let mapping = build_tvar_mapping g in
   remove_idle_choices mapping g
@@ -620,6 +634,27 @@ type union_find =
   ; elems: (RoleName.t, union_find_elem, RoleName.comparator_witness) Map.t
   ; uid: int }
 
+let get_decision_roles tvar_mapping gtype =
+  let fst_actions = first_actions tvar_mapping gtype in
+  let same_roles roles action =
+    let action_participants = GAction.participants action in
+    match roles with
+    | None -> Some action_participants
+    | Some decision_roles ->
+        if Set.equal action_participants decision_roles then roles
+        else
+          InvalidMixedChoice
+            "All first actions of a branch in a mixed choice should involve \
+             the same two decision roles" |> uerr
+  in
+  let roles = Set.fold fst_actions ~init:None ~f:same_roles in
+  Option.value_exn roles
+
+let decision_roles_to_tuple decision_roles =
+  match Set.to_list decision_roles with
+  | [r1; r2] -> (r1, r2)
+  | _ -> Violation "There should be exactly two decision roles" |> raise
+
 let split_mchoice_branches tvar_mapping gtypes =
   (* Assume that all gtypes have some actions *)
   let add_gtype ({leaders; elems; uid} as ufind) gtype =
@@ -627,14 +662,9 @@ let split_mchoice_branches tvar_mapping gtypes =
       let gtypes, uid = UnionFind.get root in
       UnionFind.set root (gtype :: gtypes, uid)
     in
-    let fst_actions = first_actions tvar_mapping gtype in
-    if Set.length fst_actions > 1 then
-      uerr
-        (InvalidMixedChoice
-           "Every branch in a mixed choice should have at most one first \
-            action")
-      |> raise ;
-    let r1, r2, _ = Set.choose_exn fst_actions in
+    let r1, r2 =
+      decision_roles_to_tuple @@ get_decision_roles tvar_mapping gtype
+    in
     let elem1 = Map.find elems r1 in
     let elem2 = Map.find elems r2 in
     match (elem1, elem2) with
