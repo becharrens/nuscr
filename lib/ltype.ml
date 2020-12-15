@@ -345,8 +345,10 @@ let rec project' (global_t : global_t) (projected_role : RoleName.t) =
       match projected_role with
       | _
         when RoleName.equal projected_role choice_r
-             || RoleName.equal projected_role recv_r ->
-          ChoiceL (choice_r, l_types)
+             || RoleName.equal projected_role recv_r -> (
+        match l_types with
+        | [ltype] -> ltype
+        | _ -> ChoiceL (choice_r, l_types) )
       | _ -> (
         match List.reduce ~f:(merge projected_role) l_types with
         | Some l -> l
