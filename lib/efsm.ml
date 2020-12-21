@@ -128,7 +128,7 @@ module IntSet = struct
   include Comparator.Make (M)
 end
 
-let epsilon_closures g =
+let epsilon_closure g =
   let rec compute_closure visited state =
     let edges = G.succ_e g state in
     List.fold edges ~init:visited ~f:(fun visited -> function
@@ -145,7 +145,7 @@ let epsilon_closures g =
     (Map.empty (module Int))
 
 let powerset_construction (start, old_g) =
-  let epsilons = epsilon_closures old_g in
+  let epsilons = epsilon_closure old_g in
   let count = ref 0 in
   let fresh () =
     let n = !count in
