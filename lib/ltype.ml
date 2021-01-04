@@ -128,9 +128,8 @@ let show =
 let show_local_t (local_t : local_t) =
   let show_local_protocol ((protocol, role), (roles, ltype)) =
     let roles_str = List.map ~f:RoleName.user roles in
-    sprintf "%s@%s(%s) {\n\n%s\n}"
+    sprintf "%s@%s(%s) {\n\n%s\n}" (RoleName.user role)
       (ProtocolName.user protocol)
-      (RoleName.user role)
       (Symtable.show_roles (roles_str, []))
       (show ltype)
   in
@@ -347,9 +346,8 @@ let rec project' (global_t : global_t) (projected_role : RoleName.t) =
       in
       let recv_r = Set.choose_exn possible_roles in
       let l_types = List.map ~f:(project' global_t projected_role) g_types in
-      let l_types =
-        List.filter ~f:(function EndL -> false | _ -> true) l_types
-      in
+      (* let l_types = List.filter ~f:(function EndL -> false | _ -> true)
+         l_types in *)
       match projected_role with
       | _
         when RoleName.equal projected_role choice_r
